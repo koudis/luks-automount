@@ -27,8 +27,9 @@ func TestValidateUnlockAndMount(t *testing.T) {
 		name string
 		mutate func(*Request)
 	}{
-		{"bad dev has numbers", func(r *Request) { r.Dev = "/dev/sda1" }},
 		{"bad dev no prefix", func(r *Request) { r.Dev = "sda" }},
+		{"bad dev nested path", func(r *Request) { r.Dev = "/dev/disk/by-id/id" }},
+		{"bad dev has space", func(r *Request) { r.Dev = "/dev/my disk" }},
 		{"bad mapper special char", func(r *Request) { r.Mapper = "my mapper" }},
 		{"empty mapper", func(r *Request) { r.Mapper = "" }},
 		{"mount point not under /mnt", func(r *Request) { r.MountPoint = "/tmp/usb" }},
@@ -75,10 +76,22 @@ func TestValidateReadUUID(t *testing.T) {
 		t.Fatalf("valid request failed: %v", err)
 	}
 
+	loop := *valid
+	loop.Dev = "/dev/loop0"
+	if err := validateRequest(&loop); err != nil {
+		t.Fatalf("loop device should be valid: %v", err)
+	}
+
+	nvme := *valid
+	nvme.Dev = "/dev/nvme0n1"
+	if err := validateRequest(&nvme); err != nil {
+		t.Fatalf("nvme device should be valid: %v", err)
+	}
+
 	bad := *valid
-	bad.Dev = "/dev/sda1"
+	bad.Dev = "/dev/disk/by-id/id"
 	if err := validateRequest(&bad); err == nil {
-		t.Error("expected error for dev with partition number")
+		t.Error("expected error for nested dev path")
 	}
 }
 

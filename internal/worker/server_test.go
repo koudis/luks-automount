@@ -3,8 +3,11 @@ package worker
 import (
 	"bytes"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func runServer(input string) (Response, int) {
@@ -49,7 +52,7 @@ func TestServer_UnknownOp(t *testing.T) {
 }
 
 func TestServer_ReadUUID_ValidationFail(t *testing.T) {
-	req := Request{Op: OpReadUUID, Dev: "/dev/sda1"}
+	req := Request{Op: OpReadUUID, Dev: "/dev/disk/by-id/id"}
 	b, _ := json.Marshal(req)
 	resp, code := runServer(string(b) + "\n")
 	if code != ExitProtocol {
@@ -75,7 +78,7 @@ func TestServer_ReadUUID_DevNotFound(t *testing.T) {
 func TestServer_UnlockAndMount_ValidationFail(t *testing.T) {
 	req := Request{
 		Op:         OpUnlockAndMount,
-		Dev:        "/dev/sda1",
+		Dev:        "/dev/disk/by-id/id",
 		Mapper:     "mapper",
 		MountPoint: "/mnt/test",
 		FS:         "ext4",
@@ -103,5 +106,39 @@ func TestServer_UnmountAndClose_NotMounted(t *testing.T) {
 	}
 	if resp.OK {
 		t.Error("expected ok=false")
+	}
+}
+
+func TestWaitForPath_Appears(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "mapper")
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		_ = os.WriteFile(path, []byte("x"), 0o600)
+	}()
+	if err := waitForPath(path, 200*time.Millisecond); err != nil {
+		t.Fatalf("waitForPath returned error: %v", err)
+	}
+}
+
+func TestWaitForPath_Timeout(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "missing")
+	if err := waitForPath(path, 20*time.Millisecond); err == nil {
+		t.Fatal("expected timeout error")
+	}
+}
+
+func TestEnsureDirectory(t *testing.T) {
+	dir := t.TempDir()
+	if err := ensureDirectory(dir); err != nil {
+		t.Fatalf("expected existing directory to pass: %v", err)
+	}
+	file := filepath.Join(dir, "file")
+	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureDirectory(file); err == nil {
+		t.Fatal("expected file path to fail")
 	}
 }

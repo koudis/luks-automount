@@ -42,6 +42,7 @@ func TestSmoke_WorkerProtocol(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping smoke test in short mode")
 	}
+	mountPoint := smokeCreateMountPoint(t)
 	smokeCheckLoopDevices(t)
 
 	loopDev := smokeCreateLUKSDevice(t)
@@ -52,14 +53,38 @@ func TestSmoke_WorkerProtocol(t *testing.T) {
 	}
 	t.Logf("LUKS UUID: %s", uuid)
 
-	mountPoint, err := os.MkdirTemp("/mnt", "luks-smoke-*")
-	if err != nil {
-		t.Fatalf("create mount point: %v", err)
-	}
-	t.Cleanup(func() { os.Remove(mountPoint) })
-
 	smokeUnlockAndMount(t, loopDev, mountPoint)
 	smokeUnmountAndClose(t, mountPoint)
+}
+
+func smokeCreateMountPoint(t *testing.T) string {
+	t.Helper()
+	if p := os.Getenv("LUKS_AUTOMOUNT_SMOKE_MOUNTPOINT"); p != "" {
+		if !strings.HasPrefix(p, "/mnt/") {
+			t.Fatalf("LUKS_AUTOMOUNT_SMOKE_MOUNTPOINT must be under /mnt/: %s", p)
+		}
+		st, err := os.Stat(p)
+		if err != nil {
+			t.Fatalf("stat LUKS_AUTOMOUNT_SMOKE_MOUNTPOINT: %v", err)
+		}
+		if !st.IsDir() {
+			t.Fatalf("LUKS_AUTOMOUNT_SMOKE_MOUNTPOINT is not a directory: %s", p)
+		}
+		return p
+	}
+	st, err := os.Stat("/mnt")
+	if err != nil {
+		t.Fatalf("stat /mnt: %v", err)
+	}
+	if !st.IsDir() {
+		t.Fatalf("/mnt is not a directory")
+	}
+	p, err := os.MkdirTemp("/mnt", "luks-smoke-*")
+	if err != nil {
+		t.Fatalf("create mount point under /mnt: %v", err)
+	}
+	t.Cleanup(func() { os.Remove(p) })
+	return p
 }
 
 func smokeCheckLoopDevices(t *testing.T) {
@@ -156,7 +181,6 @@ func smokeUnlockAndMount(t *testing.T, dev, mountPoint string) {
 	if code != ExitOK || !resp.OK {
 		t.Fatalf("unlock_and_mount failed (exit=%d): %s", code, resp.Message)
 	}
-	t.Cleanup(func() { smokeUnmountAndClose(t, mountPoint) })
 }
 
 func smokeUnmountAndClose(t *testing.T, mountPoint string) {
@@ -164,7 +188,7 @@ func smokeUnmountAndClose(t *testing.T, mountPoint string) {
 	req := Request{Op: OpUnmountAndClose, Mapper: smokeMapper, MountPoint: mountPoint}
 	resp, code := smokeRunServer(t, req, "")
 	if code != ExitOK || !resp.OK {
-		t.Logf("unmount_and_close warning (exit=%d): %s", code, resp.Message)
+		t.Fatalf("unmount_and_close failed (exit=%d): %s", code, resp.Message)
 	}
 }
 

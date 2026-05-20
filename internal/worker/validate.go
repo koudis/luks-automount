@@ -10,7 +10,7 @@ import (
 
 var (
 	mapperRe = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
-	devRe    = regexp.MustCompile(`^/dev/[a-z]+$`)
+	devRe    = regexp.MustCompile(`^/dev/[a-zA-Z0-9_.-]+$`)
 )
 
 var forbiddenOptions = map[string]bool{
@@ -34,7 +34,7 @@ func validateRequest(r *Request) error {
 
 func validateUnlockAndMount(r *Request) error {
 	if !devRe.MatchString(r.Dev) {
-		return fmt.Errorf("dev %q must match /dev/[a-z]+", r.Dev)
+		return fmt.Errorf("dev %q must be a direct /dev block-device path", r.Dev)
 	}
 	if !mapperRe.MatchString(r.Mapper) {
 		return fmt.Errorf("mapper %q must match [a-zA-Z0-9_-]+", r.Mapper)
@@ -57,7 +57,7 @@ func validateUnmountAndClose(r *Request) error {
 
 func validateReadUUID(r *Request) error {
 	if !devRe.MatchString(r.Dev) {
-		return fmt.Errorf("dev %q must match /dev/[a-z]+", r.Dev)
+		return fmt.Errorf("dev %q must be a direct /dev block-device path", r.Dev)
 	}
 	return nil
 }

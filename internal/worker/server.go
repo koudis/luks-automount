@@ -8,12 +8,15 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"time"
 
 	"luks-automount/internal/config"
 	"luks-automount/internal/luks"
 
 	"golang.org/x/sys/unix"
 )
+
+const mapperPathWaitTimeout = 2 * time.Second
 
 type Server struct {
 	in  io.Reader
@@ -88,6 +91,16 @@ func (s *Server) handleUnlockAndMount(req *Request, reader *bufio.Reader) int {
 	}
 
 	mapperPath := "/dev/mapper/" + req.Mapper
+	if err := waitForPath(mapperPath, mapperPathWaitTimeout); err != nil {
+		_ = luks.Lock(req.Mapper)
+		s.writeResponse(false, "mapper path: "+err.Error())
+		return ExitOpError
+	}
+	if err := ensureDirectory(req.MountPoint); err != nil {
+		_ = luks.Lock(req.Mapper)
+		s.writeResponse(false, "mount point: "+err.Error())
+		return ExitOpError
+	}
 	if err := s.mount(mapperPath, req); err != nil {
 		_ = luks.Lock(req.Mapper)
 		s.writeResponse(false, "mount: "+err.Error())
@@ -132,6 +145,34 @@ func (s *Server) mount(source string, req *Request) error {
 	parts = append(parts, kept...)
 	flags, data := parseMountOptions(parts)
 	return unix.Mount(source, req.MountPoint, req.FS, flags, data)
+}
+
+func waitForPath(path string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for {
+		_, err := os.Stat(path)
+		if err == nil {
+			return nil
+		}
+		if err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("stat %s: %w", path, err)
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("%s did not appear within %s", path, timeout)
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+}
+
+func ensureDirectory(path string) error {
+	st, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	if !st.IsDir() {
+		return fmt.Errorf("%s is not a directory", path)
+	}
+	return nil
 }
 
 func (s *Server) writeResponse(ok bool, msg string) {
