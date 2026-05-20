@@ -77,8 +77,8 @@ supported. Passphrases are stored in GNOME Keyring.
 | `unlock <name>` | user | One-shot: unlock and mount a specific already-plugged disk. Falls back to interactive passphrase prompt if Keyring entry is missing. |
 | `lock <name>` | user | One-shot: unmount and close a specific disk. |
 | `run` | user | Long-running daemon: detect and auto-unlock on plug-in, auto-lock on removal. Only one instance may run at a time (lock file). |
-| `install-service` | user | Write a systemd user unit file and enable it so the daemon starts automatically at login. |
-| `uninstall-service` | user | Stop and disable the systemd user service and remove the unit file. |
+| `install` | user + sudo | Install the binary to `/usr/local/bin`, write the sudoers drop-in, and write and enable the systemd user unit. |
+| `uninstall` | user + sudo | Disable and remove the systemd user unit, remove the sudoers drop-in, and remove the installed binary. |
 | `worker` | root (sudo) | **Internal, hidden from help.** Performs a single privileged operation driven by a JSON message on stdin. |
 
 - **FR-17** `add` MUST list currently plugged LUKS disks for the user to
@@ -96,28 +96,37 @@ supported. Passphrases are stored in GNOME Keyring.
 - **FR-21** The `name` field MUST match `[a-zA-Z0-9_-]+` (same charset as
   `mapper_name`). It is used as both the Keyring account key and the default
   `mapper_name` if not overridden.
-- **FR-22** `install-service` MUST write a systemd user unit file to
-  `~/.config/systemd/user/luks-automount.service` containing an
-  `[Install]` section with `WantedBy=default.target` so the service starts
-  at login. The `ExecStart` value MUST be the absolute path of the running
-  binary followed by `run`.
-- **FR-23** `install-service` MUST call `systemctl --user daemon-reload`
-  and `systemctl --user enable --now luks-automount` after writing the unit
-  file.
-- **FR-24** `install-service` MUST fail with a clear error if the unit file
-  already exists, unless a `--force` flag is passed, in which case the
-  existing file is overwritten and the service is restarted.
-- **FR-25** `uninstall-service` MUST call
-  `systemctl --user disable --now luks-automount` and then remove the unit
-  file. It MUST succeed (with a warning) if the unit file does not exist.
+- **FR-22** `install` MUST ask for confirmation before installing the current
+  binary to `/usr/local/bin/luks-automount` with root privileges.
+- **FR-23** `install` MUST ask for confirmation before writing a systemd user
+  unit file to `~/.config/systemd/user/luks-automount.service`. The unit MUST
+  contain an `[Install]` section with `WantedBy=default.target` and
+  `ExecStart=/usr/local/bin/luks-automount run`. After writing the unit, it
+  MUST call `systemctl --user daemon-reload` and
+  `systemctl --user enable --now luks-automount`.
+- **FR-24** `install` MUST ask for confirmation before writing
+  `/etc/sudoers.d/luks-automount` with root privileges. The rule MUST allow the
+  current user to run `/usr/local/bin/luks-automount worker` as root without a
+  password prompt. The sudoers content MUST be validated with `visudo` before
+  installation.
+- **FR-25** `uninstall` MUST ask for confirmation before disabling and
+  removing `~/.config/systemd/user/luks-automount.service`. It MUST call
+  `systemctl --user disable --now luks-automount`, remove the unit file, and
+  then call `systemctl --user daemon-reload`. If the unit file does not
+  exist, it MUST log `WARN` and continue.
+- **FR-26** `uninstall` MUST ask for confirmation before removing
+  `/etc/sudoers.d/luks-automount` with root privileges.
+- **FR-27** `uninstall` MUST ask for confirmation before removing
+  `/usr/local/bin/luks-automount` with root privileges.
 
 ---
 
 ## 3. Non-Functional Requirements
 
 - **NFR-01** The program MUST be written in Go with no CGO.
-- **NFR-02** Privilege escalation MUST use plain `sudo` to re-execute the
-  same binary with the hidden `worker` subcommand.
+- **NFR-02** Privilege escalation MUST use `sudo` to re-execute the same
+  binary with the hidden `worker` subcommand. If the caller has no terminal,
+  the worker invocation MUST pass `-n` so `sudo` fails instead of prompting.
 - **NFR-03** The passphrase MUST be transmitted from the user process to the
   worker exclusively via **stdin** (a pipe). It MUST NOT appear on the
   command line, in environment variables, or in any log.
@@ -139,6 +148,8 @@ supported. Passphrases are stored in GNOME Keyring.
 - **NFR-10** Mount options MUST always include `nosuid,nodev` prepended
   before any user-supplied options. User-supplied options MUST NOT override
   or remove these forced options.
+- **NFR-11** `cryptsetup` MUST be available to the privileged worker for
+  LUKS identification, unlocking, and closing.
 
 ---
 
@@ -272,12 +283,14 @@ luks-automount/
 | Mount point does not exist | Log `ERROR` and abort; `add` prints `sudo mkdir` hint |
 | Mount point outside `/mnt` | Rejected at `add` time and by the worker at runtime |
 | `remove` while disk is mounted | Exit with error; user must run `lock <name>` first |
-| Disk already unlocked / mounted | Log `INFO` and skip that step; remaining steps proceed |
+| Disk already unlocked / mounted | Skip the already-done step; remaining steps proceed |
+| Disk already closed / unmounted | Skip the already-done step; remaining steps proceed |
 | `chown` fails on read-only mount | Log `WARN`; mount operation still reports success |
 | Device removed while mounted | Log `WARN`; proceed with lazy unmount + LUKS close |
 | Duplicate entry on `add` | Exit with error listing which field is duplicated |
 | Second `run` instance started | Exit with error: "daemon is already running" |
-| `install-service` when unit exists | Exit with error unless `--force` is passed |
-| `uninstall-service` when unit missing | Log `WARN` and exit 0 |
+| `install` step declined | Skip the declined step and continue with the next step |
+| `uninstall` step declined | Skip the declined step and continue with the next step |
+| `uninstall` when unit file is missing | Log `WARN` and continue |
 | sudo denied / no TTY | Log `ERROR`; daemon stays alive |
 | Netlink socket error | Reconnect with exponential back-off |

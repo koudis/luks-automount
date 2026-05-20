@@ -16,7 +16,7 @@ func newUnlockCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "unlock <name>",
 		Short: "Unlock and mount a registered disk",
-		Args:  cobra.ExactArgs(1),
+		Args:  exactArgs(1),
 		RunE:  runUnlock,
 	}
 }
@@ -31,25 +31,37 @@ func runUnlock(cmd *cobra.Command, args []string) error {
 	if d == nil {
 		return fmt.Errorf("disk %q not found", name)
 	}
+	mapperPath := "/dev/mapper/" + d.MapperName
+	mountedSource := readProcMounts()[d.MountPoint]
+	if mountedSource == mapperPath {
+		fmt.Printf("unlocked and mounted %s at %s\n", name, d.MountPoint)
+		return nil
+	}
+	if mountedSource != "" {
+		return fmt.Errorf("mount point %s is already mounted from %s", d.MountPoint, mountedSource)
+	}
+	alreadyUnlocked := mapperExists(d.MapperName)
 
 	devPath, err := findPluggedDevByUUID(d.LUKSUUID)
 	if err != nil {
 		return err
 	}
 
-	pass, err := keyring.Get(name)
 	var passBytes []byte
-	if err != nil {
-		if !errors.Is(err, keyring.ErrNotFound) {
-			return fmt.Errorf("keyring lookup: %w", err)
+	if !alreadyUnlocked {
+		pass, err := keyring.Get(name)
+		if err != nil {
+			if !errors.Is(err, keyring.ErrNotFound) {
+				return fmt.Errorf("keyring lookup: %w", err)
+			}
+			p, perr := readPassphrase("LUKS passphrase: ")
+			if perr != nil {
+				return perr
+			}
+			passBytes = p
+		} else {
+			passBytes = []byte(pass)
 		}
-		p, perr := readPassphrase("LUKS passphrase: ")
-		if perr != nil {
-			return perr
-		}
-		passBytes = p
-	} else {
-		passBytes = []byte(pass)
 	}
 	defer zero(passBytes)
 

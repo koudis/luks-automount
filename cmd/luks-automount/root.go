@@ -9,7 +9,10 @@ func newRootCmd() *cobra.Command {
 		Use:           "luks-automount",
 		Short:         "Auto-unlock and mount LUKS USB disks",
 		SilenceUsage:  true,
-		SilenceErrors: false,
+		SilenceErrors: true,
+		CompletionOptions: cobra.CompletionOptions{
+			DisableDefaultCmd: true,
+		},
 	}
 	root.AddCommand(
 		newAddCmd(),
@@ -18,8 +21,8 @@ func newRootCmd() *cobra.Command {
 		newUnlockCmd(),
 		newLockCmd(),
 		newRunCmd(),
-		newInstallServiceCmd(),
-		newUninstallServiceCmd(),
+		newInstallCmd(),
+		newUninstallCmd(),
 		newWorkerCmd(),
 	)
 	return root

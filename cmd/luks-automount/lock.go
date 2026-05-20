@@ -12,7 +12,7 @@ func newLockCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "lock <name>",
 		Short: "Unmount and close a registered disk",
-		Args:  cobra.ExactArgs(1),
+		Args:  exactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
 			cfg, err := loadConfig()
@@ -22,6 +22,15 @@ func newLockCmd() *cobra.Command {
 			d := cfg.Find(name)
 			if d == nil {
 				return fmt.Errorf("disk %q not found", name)
+			}
+			mapperPath := "/dev/mapper/" + d.MapperName
+			mountedSource := readProcMounts()[d.MountPoint]
+			if mountedSource != "" && mountedSource != mapperPath {
+				return fmt.Errorf("mount point %s is already mounted from %s", d.MountPoint, mountedSource)
+			}
+			if mountedSource == "" && !mapperExists(d.MapperName) {
+				fmt.Printf("unmounted and closed %s\n", name)
+				return nil
 			}
 			client, err := worker.NewClient()
 			if err != nil {

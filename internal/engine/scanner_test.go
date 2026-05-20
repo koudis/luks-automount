@@ -14,12 +14,12 @@ func TestIsUSBStorageName(t *testing.T) {
 		}
 	}
 	invalid := []string{
-		"sd",       // too short
-		"sda1",     // has digit
-		"nvme0n1",  // not sd prefix
-		"hda",      // not sd prefix
-		"sda_",     // underscore
-		"SDA",      // uppercase
+		"sd",      // too short
+		"sda1",    // has digit
+		"nvme0n1", // not sd prefix
+		"hda",     // not sd prefix
+		"sda_",    // underscore
+		"SDA",     // uppercase
 		"",
 	}
 	for _, n := range invalid {
@@ -77,5 +77,31 @@ func TestIsRemovableOrUSB_NoFilesNoSymlink(t *testing.T) {
 	dir := t.TempDir()
 	if isRemovableOrUSB(dir) {
 		t.Error("expected dir with no removable file and no symlink to return false")
+	}
+}
+
+func TestScanPluggedDisksIncludesPartitions(t *testing.T) {
+	sysBlock := t.TempDir()
+	diskPath := filepath.Join(sysBlock, "sdb")
+	partPath := filepath.Join(diskPath, "sdb1")
+	if err := os.MkdirAll(partPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(diskPath, "removable"), []byte("1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(partPath, "partition"), []byte("1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	disks, err := scanPluggedDisks(sysBlock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(disks) != 2 {
+		t.Fatalf("expected disk and partition, got %+v", disks)
+	}
+	if disks[0].DevPath != "/dev/sdb" || disks[1].DevPath != "/dev/sdb1" {
+		t.Fatalf("unexpected disks: %+v", disks)
 	}
 }

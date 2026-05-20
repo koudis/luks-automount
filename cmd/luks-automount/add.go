@@ -18,7 +18,7 @@ func newAddCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "add <name>",
 		Short: "Register a new LUKS disk",
-		Args:  cobra.ExactArgs(1),
+		Args:  exactArgs(1),
 		RunE:  runAdd,
 	}
 }
@@ -118,5 +118,3 @@ func runAdd(cmd *cobra.Command, args []string) error {
 	fmt.Fprintf(os.Stderr, "Registered %s (uuid=%s)\n", name, uuid)
 	return nil
 }
-
-

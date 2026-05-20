@@ -7,6 +7,10 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
+	"syscall"
+
+	"golang.org/x/term"
 )
 
 const SubcommandName = "worker"
@@ -14,6 +18,10 @@ const SubcommandName = "worker"
 type Client struct {
 	selfPath string
 	sudoPath string
+}
+
+var stdinIsTerminal = func() bool {
+	return term.IsTerminal(int(syscall.Stdin))
 }
 
 func NewClient() (*Client, error) {
@@ -68,8 +76,14 @@ func (c *Client) UnmountAndClose(req *Request) error {
 }
 
 func (c *Client) run(req *Request, passphrase []byte) (*Response, error) {
-	cmd := exec.Command(c.sudoPath, c.selfPath, SubcommandName)
-	cmd.Stderr = os.Stderr
+	terminal := stdinIsTerminal()
+	cmd := exec.Command(c.sudoPath, c.sudoWorkerArgs(terminal)...)
+	var stderr bytes.Buffer
+	if terminal {
+		cmd.Stderr = os.Stderr
+	} else {
+		cmd.Stderr = &stderr
+	}
 
 	var input bytes.Buffer
 	jb, err := json.Marshal(req)
@@ -100,7 +114,7 @@ func (c *Client) run(req *Request, passphrase []byte) (*Response, error) {
 
 	if out.Len() == 0 {
 		if runErr != nil {
-			return nil, fmt.Errorf("worker exited without response: %w", runErr)
+			return nil, workerProcessError(runErr, stderr.String())
 		}
 		return nil, errors.New("worker produced no response")
 	}
@@ -112,7 +126,26 @@ func (c *Client) run(req *Request, passphrase []byte) (*Response, error) {
 	return &resp, nil
 }
 
+func (c *Client) sudoWorkerArgs(terminal bool) []string {
+	args := []string{c.selfPath, SubcommandName}
+	if terminal {
+		return args
+	}
+	return append([]string{"-n"}, args...)
+}
+
+func workerProcessError(err error, stderr string) error {
+	message := strings.TrimSpace(stderr)
+	if message == "" {
+		return fmt.Errorf("worker exited without response: %w", err)
+	}
+	return fmt.Errorf("worker exited without response: %w: %s", err, message)
+}
+
 func RunInteractiveSudo() error {
+	if !stdinIsTerminal() {
+		return nil
+	}
 	sudo, err := exec.LookPath("sudo")
 	if err != nil {
 		return err

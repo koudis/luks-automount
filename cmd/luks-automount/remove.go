@@ -13,7 +13,7 @@ func newRemoveCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "remove <name>",
 		Short: "Remove a registered disk (refuses if currently mounted)",
-		Args:  cobra.ExactArgs(1),
+		Args:  exactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
 			cfg, err := loadConfig()

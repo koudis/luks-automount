@@ -23,7 +23,7 @@ func newRunCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "run",
 		Short: "Run the auto-unlock daemon",
-		Args:  cobra.NoArgs,
+		Args:  noArgs(),
 		RunE:  runDaemon,
 	}
 }

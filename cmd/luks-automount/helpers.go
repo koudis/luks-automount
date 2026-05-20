@@ -8,10 +8,57 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/spf13/cobra"
 	"golang.org/x/term"
 
 	"luks-automount/internal/config"
 )
+
+func exactArgs(count int) cobra.PositionalArgs {
+	return func(cmd *cobra.Command, args []string) error {
+		if len(args) == count {
+			return nil
+		}
+
+		usage := commandUsage(cmd)
+		spec := argumentSpec(cmd)
+		if len(args) < count {
+			if count == 1 && spec != "" {
+				return fmt.Errorf("missing required argument %s; usage: %s", spec, usage)
+			}
+			if spec != "" {
+				return fmt.Errorf("missing required arguments %s; usage: %s", spec, usage)
+			}
+			return fmt.Errorf("missing required arguments; usage: %s", usage)
+		}
+
+		return fmt.Errorf("unexpected extra arguments for %s: %s; usage: %s", cmd.CommandPath(), strings.Join(args[count:], " "), usage)
+	}
+}
+
+func noArgs() cobra.PositionalArgs {
+	return func(cmd *cobra.Command, args []string) error {
+		if len(args) == 0 {
+			return nil
+		}
+
+		usage := commandUsage(cmd)
+		return fmt.Errorf("unexpected arguments for %s: %s; usage: %s", cmd.CommandPath(), strings.Join(args, " "), usage)
+	}
+}
+
+func commandUsage(cmd *cobra.Command) string {
+	usage := cmd.CommandPath()
+	spec := argumentSpec(cmd)
+	if spec == "" {
+		return usage
+	}
+	return usage + " " + spec
+}
+
+func argumentSpec(cmd *cobra.Command) string {
+	return strings.TrimSpace(strings.TrimPrefix(cmd.Use, cmd.Name()))
+}
 
 func loadConfig() (*config.Config, error) {
 	path, err := config.DefaultPath()

@@ -18,6 +18,20 @@ import (
 
 const mapperPathWaitTimeout = 2 * time.Second
 
+const (
+	closeMapperAttempts = 10
+)
+
+var (
+	lockMapper            = luks.Lock
+	unlockMapper          = luks.Unlock
+	closeMapperRetryDelay = 500 * time.Millisecond
+	statPath              = os.Stat
+	readMountTable        = os.ReadFile
+	mountFilesystem       = unix.Mount
+	unmountFilesystem     = unix.Unmount
+)
+
 type Server struct {
 	in  io.Reader
 	out io.Writer
@@ -73,36 +87,57 @@ func (s *Server) handleReadUUID(req *Request) int {
 }
 
 func (s *Server) handleUnlockAndMount(req *Request, reader *bufio.Reader) int {
-	passLine, err := reader.ReadString('\n')
-	if err != nil && err != io.EOF {
-		s.writeResponse(false, "read passphrase: "+err.Error())
-		return ExitProtocol
+	mapperPath := mapperDevicePath(req.Mapper)
+	mountedFrom, err := mountedSource(req.MountPoint)
+	if err != nil {
+		s.writeResponse(false, "mount state: "+err.Error())
+		return ExitOpError
 	}
-	pass := []byte(strings.TrimRight(passLine, "\n"))
-	defer zero(pass)
+	if mountedFrom == mapperPath {
+		s.writeResponse(true, "")
+		return ExitOK
+	}
+	if mountedFrom != "" {
+		s.writeResponse(false, fmt.Sprintf("mount point %s is already mounted from %s", req.MountPoint, mountedFrom))
+		return ExitOpError
+	}
 
-	if err := luks.Unlock(req.Dev, req.Mapper, pass); err != nil {
-		if luks.IsWrongPassphrase(err) {
-			s.writeResponse(false, "wrong passphrase")
+	justUnlocked := false
+	if !mapperExists(req.Mapper) {
+		passLine, err := reader.ReadString('\n')
+		if err != nil && err != io.EOF {
+			s.writeResponse(false, "read passphrase: "+err.Error())
+			return ExitProtocol
+		}
+		pass := []byte(strings.TrimRight(passLine, "\n"))
+		defer zero(pass)
+
+		if err := unlockMapper(req.Dev, req.Mapper, pass); err != nil {
+			if luks.IsWrongPassphrase(err) {
+				s.writeResponse(false, "wrong passphrase")
+				return ExitOpError
+			}
+			s.writeResponse(false, "unlock: "+err.Error())
 			return ExitOpError
 		}
-		s.writeResponse(false, "unlock: "+err.Error())
-		return ExitOpError
-	}
-
-	mapperPath := "/dev/mapper/" + req.Mapper
-	if err := waitForPath(mapperPath, mapperPathWaitTimeout); err != nil {
-		_ = luks.Lock(req.Mapper)
-		s.writeResponse(false, "mapper path: "+err.Error())
-		return ExitOpError
+		justUnlocked = true
+		if err := waitForPath(mapperPath, mapperPathWaitTimeout); err != nil {
+			_ = lockMapper(req.Mapper)
+			s.writeResponse(false, "mapper path: "+err.Error())
+			return ExitOpError
+		}
 	}
 	if err := ensureDirectory(req.MountPoint); err != nil {
-		_ = luks.Lock(req.Mapper)
+		if justUnlocked {
+			_ = lockMapper(req.Mapper)
+		}
 		s.writeResponse(false, "mount point: "+err.Error())
 		return ExitOpError
 	}
 	if err := s.mount(mapperPath, req); err != nil {
-		_ = luks.Lock(req.Mapper)
+		if justUnlocked {
+			_ = lockMapper(req.Mapper)
+		}
 		s.writeResponse(false, "mount: "+err.Error())
 		return ExitOpError
 	}
@@ -116,18 +151,27 @@ func (s *Server) handleUnlockAndMount(req *Request, reader *bufio.Reader) int {
 }
 
 func (s *Server) handleUnmountAndClose(req *Request) int {
-	var firstErr error
-	if err := unix.Unmount(req.MountPoint, unix.MNT_DETACH); err != nil && err != unix.EINVAL {
-		firstErr = fmt.Errorf("unmount: %w", err)
+	mapperPath := mapperDevicePath(req.Mapper)
+	mountedFrom, err := mountedSource(req.MountPoint)
+	if err != nil {
+		s.writeResponse(false, "mount state: "+err.Error())
+		return ExitOpError
 	}
-	if err := luks.Lock(req.Mapper); err != nil {
-		if firstErr == nil {
-			firstErr = fmt.Errorf("close: %w", err)
+	if mountedFrom != "" && mountedFrom != mapperPath {
+		s.writeResponse(false, fmt.Sprintf("mount point %s is already mounted from %s", req.MountPoint, mountedFrom))
+		return ExitOpError
+	}
+	if mountedFrom == mapperPath {
+		if err := unmountFilesystem(req.MountPoint, unix.MNT_DETACH); err != nil && err != unix.EINVAL {
+			s.writeResponse(false, "unmount: "+err.Error())
+			return ExitOpError
 		}
 	}
-	if firstErr != nil {
-		s.writeResponse(false, firstErr.Error())
-		return ExitOpError
+	if mapperExists(req.Mapper) {
+		if err := closeMapperWithRetry(req.Mapper); err != nil {
+			s.writeResponse(false, "close: "+err.Error())
+			return ExitOpError
+		}
 	}
 	s.writeResponse(true, "")
 	return ExitOK
@@ -144,13 +188,61 @@ func (s *Server) mount(source string, req *Request) error {
 	}
 	parts = append(parts, kept...)
 	flags, data := parseMountOptions(parts)
-	return unix.Mount(source, req.MountPoint, req.FS, flags, data)
+	return mountFilesystem(source, req.MountPoint, req.FS, flags, data)
+}
+
+func mapperDevicePath(mapper string) string {
+	return "/dev/mapper/" + mapper
+}
+
+func mapperExists(mapper string) bool {
+	_, err := statPath(mapperDevicePath(mapper))
+	return err == nil
+}
+
+func mountedSource(mountPoint string) (string, error) {
+	data, err := readMountTable("/proc/mounts")
+	if err != nil {
+		return "", err
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		if fields[1] == mountPoint {
+			return fields[0], nil
+		}
+	}
+	return "", nil
+}
+
+func closeMapperWithRetry(mapper string) error {
+	var err error
+	for attempt := 0; attempt < closeMapperAttempts; attempt++ {
+		err = lockMapper(mapper)
+		if err == nil {
+			return nil
+		}
+		if !isBusyMapperError(err) {
+			return err
+		}
+		if attempt == closeMapperAttempts-1 {
+			break
+		}
+		time.Sleep(closeMapperRetryDelay)
+	}
+	return err
+}
+
+func isBusyMapperError(err error) bool {
+	return strings.Contains(strings.ToLower(err.Error()), "busy")
 }
 
 func waitForPath(path string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	for {
-		_, err := os.Stat(path)
+		_, err := statPath(path)
 		if err == nil {
 			return nil
 		}
@@ -165,7 +257,7 @@ func waitForPath(path string, timeout time.Duration) error {
 }
 
 func ensureDirectory(path string) error {
-	st, err := os.Stat(path)
+	st, err := statPath(path)
 	if err != nil {
 		return err
 	}

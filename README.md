@@ -4,11 +4,36 @@ Automatically unlocks and mounts whole-disk LUKS-encrypted USB SSDs when plugged
 
 ## Requirements
 
-- Linux with kernel UEvent support
-- `sudo` configured to allow the user to run `luks-automount worker` as root
-- GNOME Keyring (or a compatible Secret Service implementation)
-- `cryptsetup` installed
+- Linux with device-mapper, `/dev/mapper`, block-device UEvent support, and mount support
+- A graphical user session with GNOME Keyring or another compatible Secret Service implementation
+- `sudo` installed and configured to allow the user to run `luks-automount worker` as root
 - Mount points created under `/mnt/` before registering a disk
+
+### Runtime requirements
+
+- The hidden `worker` subcommand must be executable through `sudo`
+- The user session must provide access to the Secret Service API so stored passphrases can be read
+- `install` and `uninstall` require a user `systemd` instance
+- The program validates mount points under `/mnt/`; bare `/mnt` and paths containing `..` are rejected
+
+### Build requirements
+
+- Go 1.26 or newer
+- A Linux system matching the runtime requirements above
+
+### External tools and services
+
+- Required for normal operation:
+  - `sudo`
+  - `cryptsetup`
+  - `systemctl` for `install` and `uninstall`
+  - GNOME Keyring or another Secret Service provider
+- Required for the integration smoke test:
+  - `dd`
+  - `losetup`
+  - `mkfs.ext4`
+  - root privileges
+  - a host or VM with working loop devices
 
 ## Build
 
@@ -16,11 +41,13 @@ Automatically unlocks and mounts whole-disk LUKS-encrypted USB SSDs when plugged
 go build -o luks-automount ./cmd/luks-automount
 ```
 
-Install to a directory on your PATH, e.g.:
+Install the tool, user service, and sudoers rule:
 
 ```sh
-sudo cp luks-automount /usr/local/bin/
+./luks-automount install
 ```
+
+The installer asks for confirmation before each step. Root access is requested through `sudo` only for installing `/usr/local/bin/luks-automount` and `/etc/sudoers.d/luks-automount`.
 
 ## Usage
 
@@ -55,17 +82,21 @@ luks-automount run
 
 Watches for plug/unplug events and unlocks or locks registered disks automatically. Only one instance may run at a time.
 
-### Install as a user systemd service
+### Install
+
+The user service cannot answer `sudo` password prompts. Run the installer from the built binary before enabling normal daemon use.
 
 ```sh
-luks-automount install-service
+luks-automount install
 ```
 
-Writes `~/.config/systemd/user/luks-automount.service` and enables it immediately. Use `--force` to overwrite an existing unit.
+The command can install the binary to `/usr/local/bin/luks-automount`, write the sudoers drop-in, write `~/.config/systemd/user/luks-automount.service`, and enable it immediately.
 
 ```sh
-luks-automount uninstall-service
+luks-automount uninstall
 ```
+
+The command can disable and remove `~/.config/systemd/user/luks-automount.service`, remove `/etc/sudoers.d/luks-automount`, and remove `/usr/local/bin/luks-automount`.
 
 ### Remove a disk registration
 
@@ -76,12 +107,14 @@ luks-automount remove myusb
 
 ## sudo configuration
 
-Add a rule so the user can run the worker without a password prompt during daemon operation:
+The installer writes this rule so the user service can run the worker without a password prompt:
 
 ```
 # /etc/sudoers.d/luks-automount
 youruser ALL=(root) NOPASSWD: /usr/local/bin/luks-automount worker
 ```
+
+If you manage sudoers manually, validate changes with `visudo` and keep the path equal to `/usr/local/bin/luks-automount`.
 
 ## Maintenance
 
@@ -116,3 +149,7 @@ The integration smoke test requires root and a kernel with loop-device support (
 go test -tags integration -c -o /tmp/worker.test ./internal/worker/
 sudo /tmp/worker.test -test.run TestSmoke_WorkerProtocol -test.v
 ```
+
+## License
+
+This project is licensed under the Apache License 2.0. See `LICENSE`.

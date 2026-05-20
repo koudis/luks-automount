@@ -12,7 +12,11 @@ type PluggedDisk struct {
 }
 
 func ScanPluggedDisks() ([]PluggedDisk, error) {
-	entries, err := os.ReadDir("/sys/block")
+	return scanPluggedDisks("/sys/block")
+}
+
+func scanPluggedDisks(sysBlock string) ([]PluggedDisk, error) {
+	entries, err := os.ReadDir(sysBlock)
 	if err != nil {
 		return nil, err
 	}
@@ -22,15 +26,37 @@ func ScanPluggedDisks() ([]PluggedDisk, error) {
 		if !isUSBStorageName(name) {
 			continue
 		}
-		if !isRemovableOrUSB("/sys/block/" + name) {
+		sysPath := filepath.Join(sysBlock, name)
+		if !isRemovableOrUSB(sysPath) {
 			continue
 		}
-		disks = append(disks, PluggedDisk{
-			DevPath: "/dev/" + name,
-			DevName: name,
-		})
+		disks = append(disks, pluggedDisk(name))
+		disks = append(disks, scanPartitions(sysPath)...)
 	}
 	return disks, nil
+}
+
+func scanPartitions(sysPath string) []PluggedDisk {
+	entries, err := os.ReadDir(sysPath)
+	if err != nil {
+		return nil
+	}
+	var partitions []PluggedDisk
+	for _, e := range entries {
+		name := e.Name()
+		if !isPartitionSysEntry(filepath.Join(sysPath, name)) {
+			continue
+		}
+		partitions = append(partitions, pluggedDisk(name))
+	}
+	return partitions
+}
+
+func pluggedDisk(name string) PluggedDisk {
+	return PluggedDisk{
+		DevPath: "/dev/" + name,
+		DevName: name,
+	}
 }
 
 func isUSBStorageName(name string) bool {
@@ -59,4 +85,9 @@ func isRemovableOrUSB(sysPath string) bool {
 		return false
 	}
 	return strings.Contains(target, "/usb")
+}
+
+func isPartitionSysEntry(sysPath string) bool {
+	_, err := os.ReadFile(filepath.Join(sysPath, "partition"))
+	return err == nil
 }

@@ -15,7 +15,7 @@ func newListCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "list",
 		Short: "List registered disks and their current status",
-		Args:  cobra.NoArgs,
+		Args:  noArgs(),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := loadConfig()
 			if err != nil {
@@ -84,4 +84,3 @@ func readProcMounts() map[string]string {
 	}
 	return out
 }
-

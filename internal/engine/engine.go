@@ -10,12 +10,21 @@ import (
 
 	"luks-automount/internal/config"
 	"luks-automount/internal/keyring"
-	"luks-automount/internal/luks"
 	"luks-automount/internal/monitor"
 	"luks-automount/internal/worker"
 )
 
-const shutdownDrain = 10 * time.Second
+const (
+	shutdownDrain    = 10 * time.Second
+	readUUIDAttempts = 10
+)
+
+var (
+	readUUID           = (*worker.Client).ReadUUID
+	unlockAndMount     = (*worker.Client).UnlockAndMount
+	unmountAndClose    = (*worker.Client).UnmountAndClose
+	readUUIDRetryDelay = 500 * time.Millisecond
+)
 
 type Engine struct {
 	cfg    *config.Config
@@ -111,7 +120,7 @@ func (e *Engine) handleEvent(ev monitor.Event) {
 }
 
 func (e *Engine) handleAdd(ev monitor.Event) {
-	uuid, err := luks.ReadUUID(ev.DevPath)
+	uuid, err := readUUIDWithRetry(e.client, ev.DevPath)
 	if err != nil {
 		return
 	}
@@ -129,6 +138,19 @@ func (e *Engine) handleAdd(ev monitor.Event) {
 	}
 	state.DevPath = ev.DevPath
 	e.rememberDev(ev.DevPath, uuid)
+	if state.Unlocked {
+		req := &worker.Request{
+			Op:         worker.OpUnmountAndClose,
+			Mapper:     disk.MapperName,
+			MountPoint: disk.MountPoint,
+		}
+		if err := unmountAndClose(e.client, req); err != nil {
+			slog.Error("unmount+close failed", "name", disk.Name, "err", err)
+			return
+		}
+		state.Unlocked = false
+		state.Mounted = false
+	}
 
 	pass, err := keyring.Get(disk.Name)
 	if err != nil {
@@ -152,13 +174,29 @@ func (e *Engine) handleAdd(ev monitor.Event) {
 		UID:        e.uid,
 		GID:        e.gid,
 	}
-	if err := e.client.UnlockAndMount(req, passBytes); err != nil {
+	if err := unlockAndMount(e.client, req, passBytes); err != nil {
 		slog.Error("unlock+mount failed", "name", disk.Name, "err", err)
 		return
 	}
 	state.Unlocked = true
 	state.Mounted = true
 	slog.Info("disk unlocked and mounted", "name", disk.Name, "dev", ev.DevPath, "mount", disk.MountPoint)
+}
+
+func readUUIDWithRetry(client *worker.Client, devPath string) (string, error) {
+	var err error
+	for attempt := 0; attempt < readUUIDAttempts; attempt++ {
+		var uuid string
+		uuid, err = readUUID(client, devPath)
+		if err == nil {
+			return uuid, nil
+		}
+		if attempt == readUUIDAttempts-1 {
+			break
+		}
+		time.Sleep(readUUIDRetryDelay)
+	}
+	return "", err
 }
 
 func (e *Engine) handleRemove(ev monitor.Event) {
@@ -173,6 +211,9 @@ func (e *Engine) handleRemove(ev monitor.Event) {
 	state := e.stateFor(uuid)
 	state.Lock()
 	defer state.Unlock()
+	if state.DevPath != ev.DevPath {
+		return
+	}
 
 	if state.Mounted {
 		slog.Warn("device removed while mounted", "name", disk.Name, "dev", ev.DevPath)
@@ -182,8 +223,12 @@ func (e *Engine) handleRemove(ev monitor.Event) {
 		Mapper:     disk.MapperName,
 		MountPoint: disk.MountPoint,
 	}
-	if err := e.client.UnmountAndClose(req); err != nil {
+	if err := unmountAndClose(e.client, req); err != nil {
 		slog.Error("unmount+close failed", "name", disk.Name, "err", err)
+		state.Mounted = false
+		state.DevPath = ""
+		e.forgetDev(ev.DevPath)
+		return
 	} else {
 		slog.Info("disk unmounted and closed", "name", disk.Name)
 	}

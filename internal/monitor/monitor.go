@@ -3,22 +3,30 @@ package monitor
 import (
 	"context"
 	"log/slog"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/pilebones/go-udev/netlink"
 )
 
 const (
-	initialBackoff = 500 * time.Millisecond
-	maxBackoff     = 30 * time.Second
+	initialBackoff      = 500 * time.Millisecond
+	maxBackoff          = 30 * time.Second
+	duplicateEventDelay = 2 * time.Second
+	eventMode           = netlink.Mode(int(netlink.KernelEvent) | int(netlink.UdevEvent))
 )
 
 type Monitor struct {
-	events chan Event
+	events       chan Event
+	recentEvents map[string]time.Time
 }
 
 func New() *Monitor {
-	return &Monitor{events: make(chan Event, 16)}
+	return &Monitor{
+		events:       make(chan Event, 16),
+		recentEvents: make(map[string]time.Time),
+	}
 }
 
 func (m *Monitor) Events() <-chan Event {
@@ -51,7 +59,7 @@ func (m *Monitor) Run(ctx context.Context) {
 
 func (m *Monitor) runOnce(ctx context.Context) error {
 	conn := &netlink.UEventConn{}
-	if err := conn.Connect(netlink.UdevEvent); err != nil {
+	if err := conn.Connect(eventMode); err != nil {
 		return err
 	}
 	defer conn.Close()
@@ -81,13 +89,14 @@ func (m *Monitor) dispatch(ev netlink.UEvent) {
 	if ev.Env["SUBSYSTEM"] != "block" {
 		return
 	}
-	if ev.Env["DEVTYPE"] != "disk" {
+	if !isBlockDeviceType(ev.Env["DEVTYPE"]) {
 		return
 	}
 	devName := ev.Env["DEVNAME"]
 	if devName == "" {
 		return
 	}
+	devPath := devPathFromName(devName)
 	var action Action
 	switch ev.Action {
 	case netlink.ADD:
@@ -97,9 +106,33 @@ func (m *Monitor) dispatch(ev netlink.UEvent) {
 	default:
 		return
 	}
+	if m.isDuplicate(action, devPath) {
+		return
+	}
 	m.events <- Event{
 		Action:  action,
-		DevPath: "/dev/" + devName,
-		DevName: devName,
+		DevPath: devPath,
+		DevName: filepath.Base(devPath),
 	}
+}
+
+func devPathFromName(devName string) string {
+	if strings.HasPrefix(devName, "/dev/") {
+		return devName
+	}
+	return "/dev/" + devName
+}
+
+func isBlockDeviceType(devType string) bool {
+	return devType == "disk" || devType == "partition"
+}
+
+func (m *Monitor) isDuplicate(action Action, devPath string) bool {
+	key := action.String() + "\x00" + devPath
+	now := time.Now()
+	if last, ok := m.recentEvents[key]; ok && now.Sub(last) < duplicateEventDelay {
+		return true
+	}
+	m.recentEvents[key] = now
+	return false
 }
