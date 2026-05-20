@@ -2,53 +2,6 @@
 
 Automatically unlocks and mounts whole-disk LUKS-encrypted USB SSDs when plugged in, and unmounts and locks them on removal. Passphrases are stored in GNOME Keyring. Privileged operations run through a short-lived worker subprocess invoked via `sudo`.
 
-## Requirements
-
-- Linux with device-mapper, `/dev/mapper`, block-device UEvent support, and mount support
-- A graphical user session with GNOME Keyring or another compatible Secret Service implementation
-- `sudo` installed and configured to allow the user to run `luks-automount worker` as root
-- Mount points created under `/mnt/` before registering a disk
-
-### Runtime requirements
-
-- The hidden `worker` subcommand must be executable through `sudo`
-- The user session must provide access to the Secret Service API so stored passphrases can be read
-- `install` and `uninstall` require a user `systemd` instance
-- The program validates mount points under `/mnt/`; bare `/mnt` and paths containing `..` are rejected
-
-### Build requirements
-
-- Go 1.26 or newer
-- A Linux system matching the runtime requirements above
-
-### External tools and services
-
-- Required for normal operation:
-  - `sudo`
-  - `cryptsetup`
-  - `systemctl` for `install` and `uninstall`
-  - GNOME Keyring or another Secret Service provider
-- Required for the integration smoke test:
-  - `dd`
-  - `losetup`
-  - `mkfs.ext4`
-  - root privileges
-  - a host or VM with working loop devices
-
-## Build
-
-```sh
-go build -o luks-automount ./cmd/luks-automount
-```
-
-Install the tool, user service, and sudoers rule:
-
-```sh
-./luks-automount install
-```
-
-The installer asks for confirmation before each step. Root access is requested through `sudo` only for installing `/usr/local/bin/luks-automount` and `/etc/sudoers.d/luks-automount`.
-
 ## Usage
 
 ### Register a disk
@@ -104,6 +57,53 @@ The command can disable and remove `~/.config/systemd/user/luks-automount.servic
 luks-automount lock myusb          # unmount first if mounted
 luks-automount remove myusb
 ```
+
+## Requirements
+
+- Linux with device-mapper, `/dev/mapper`, block-device UEvent support, and mount support
+- A graphical user session with GNOME Keyring or another compatible Secret Service implementation
+- `sudo` installed and configured to allow the user to run `luks-automount worker` as root
+- Mount points created under `/mnt/` before registering a disk
+
+### Runtime requirements
+
+- The hidden `worker` subcommand must be executable through `sudo`
+- The user session must provide access to the Secret Service API so stored passphrases can be read
+- `install` and `uninstall` require a user `systemd` instance
+- The program validates mount points under `/mnt/`; bare `/mnt` and paths containing `..` are rejected
+
+### Build requirements
+
+- Go 1.26 or newer
+- A Linux system matching the runtime requirements above
+
+### External tools and services
+
+- Required for normal operation:
+  - `sudo`
+  - `cryptsetup`
+  - `systemctl` for `install` and `uninstall`
+  - GNOME Keyring or another Secret Service provider
+- Required for the integration smoke test:
+  - `dd`
+  - `losetup`
+  - `mkfs.ext4`
+  - root privileges
+  - a host or VM with working loop devices
+
+## Build
+
+```sh
+go build -o luks-automount ./cmd/luks-automount
+```
+
+Install the tool, user service, and sudoers rule:
+
+```sh
+./luks-automount install
+```
+
+The installer asks for confirmation before each step. Root access is requested through `sudo` only for installing `/usr/local/bin/luks-automount` and `/etc/sudoers.d/luks-automount`.
 
 ## sudo configuration
 
