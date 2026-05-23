@@ -1,12 +1,16 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/spf13/cobra"
 
+	"luks-automount/internal/dialog"
 	"luks-automount/internal/worker"
 )
+
+var showLockMountPointBusy = dialog.ShowMountPointBusy
 
 func newLockCmd() *cobra.Command {
 	return &cobra.Command{
@@ -42,10 +46,21 @@ func newLockCmd() *cobra.Command {
 				MountPoint: d.MountPoint,
 			}
 			if err := client.UnmountAndClose(req); err != nil {
-				return err
+				return handleBusyLockError(d.MountPoint, err)
 			}
 			fmt.Printf("unmounted and closed %s\n", name)
 			return nil
 		},
 	}
+}
+
+func handleBusyLockError(mountPoint string, err error) error {
+	var busy *worker.MountPointBusyError
+	if !errors.As(err, &busy) {
+		return err
+	}
+	if dialogErr := showLockMountPointBusy(mountPoint, busy.Users); dialogErr != nil {
+		return fmt.Errorf("%w; GNOME warning unavailable: %v", err, dialogErr)
+	}
+	return err
 }

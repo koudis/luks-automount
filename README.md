@@ -43,7 +43,7 @@ The user service cannot answer `sudo` password prompts. Run the installer from t
 luks-automount install
 ```
 
-The command can install the binary to `/usr/local/bin/luks-automount`, write the sudoers drop-in, write `~/.config/systemd/user/luks-automount.service`, and enable it immediately.
+The command can install the binary to `/usr/local/bin/luks-automount`, write the sudoers drop-in, write `~/.config/systemd/user/luks-automount.service`, and enable it immediately. If a busy-mount warning does not appear from the user service, make sure the installed service file is current and restart it with `systemctl --user daemon-reload` and `systemctl --user restart luks-automount.service`.
 
 ```sh
 luks-automount uninstall
@@ -71,6 +71,7 @@ luks-automount remove myusb
 - The user session must provide access to the Secret Service API so stored passphrases can be read
 - `install` and `uninstall` require a user `systemd` instance
 - The program validates mount points under `/mnt/`; bare `/mnt` and paths containing `..` are rejected
+- Busy-mount warnings use `zenity` when the graphical session is available
 
 ### Build requirements
 
@@ -139,16 +140,46 @@ The main packages and their responsibilities:
 
 ### Running tests
 
+Automated test targets:
+
+- `go test ./...`
+  - runs the regular unit and package tests
+  - covers config validation, CLI command behavior, daemon state transitions,
+    worker protocol handling, logging helpers, monitor logic, and the
+    mount-point-busy flow
+- `go test ./internal/dialog ./cmd/luks-automount`
+  - useful as a quick focused check when changing the GNOME warning dialog,
+    service installation, or CLI lock behavior
+- `go vet ./...`
+  - runs static checks across the whole project
+
+Makefile shortcuts:
+
+- `make test` runs `go test ./...`
+- `make vet` runs `go vet ./...`
+- `make test-integration` runs the privileged worker smoke test
+
 ```sh
 go test ./...
 ```
 
-The integration smoke test requires root and a kernel with loop-device support (bare metal or a VM, not a container):
+The integration smoke test verifies the real worker path with privileged
+operations. It requires root and a kernel with loop-device support (bare metal
+or a VM, not a container):
 
 ```sh
 go test -tags integration -c -o /tmp/worker.test ./internal/worker/
 sudo /tmp/worker.test -test.run TestSmoke_WorkerProtocol -test.v
 ```
+
+For the mount-point-busy behavior, also do a manual graphical smoke test after
+changing the dialog or user-service integration:
+
+1. Mount a configured disk.
+2. Keep a shell or another app open inside the mount point.
+3. Run `luks-automount lock <name>` or trigger daemon auto-lock.
+4. Confirm the unmount is blocked and the GNOME warning appears.
+5. Close the blocking app and retry.
 
 ## License
 

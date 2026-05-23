@@ -11,6 +11,8 @@ import (
 	"time"
 )
 
+// runServer exists to keep worker tests focused; it runs one request through
+// the server and decodes the JSON response for assertions.
 func runServer(input string) (Response, int) {
 	in := strings.NewReader(input)
 	var out bytes.Buffer
@@ -20,6 +22,9 @@ func runServer(input string) (Response, int) {
 	return resp, code
 }
 
+// TestServer_EmptyRequest exists so the protocol fails fast on empty stdin; it
+// proves that by running the server without a request and checking for a
+// protocol error.
 func TestServer_EmptyRequest(t *testing.T) {
 	resp, code := runServer("")
 	if code != ExitProtocol {
@@ -30,6 +35,8 @@ func TestServer_EmptyRequest(t *testing.T) {
 	}
 }
 
+// TestServer_BadJSON exists so malformed input is rejected before any work; it
+// proves that by sending invalid JSON and checking for a protocol error.
 func TestServer_BadJSON(t *testing.T) {
 	resp, code := runServer("not json\n")
 	if code != ExitProtocol {
@@ -40,6 +47,8 @@ func TestServer_BadJSON(t *testing.T) {
 	}
 }
 
+// TestServer_UnknownOp exists so unsupported operations cannot reach the worker
+// logic; it proves that by sending an unknown op and checking for rejection.
 func TestServer_UnknownOp(t *testing.T) {
 	req := Request{Op: "do_magic"}
 	b, _ := json.Marshal(req)
@@ -52,6 +61,9 @@ func TestServer_UnknownOp(t *testing.T) {
 	}
 }
 
+// TestServer_ReadUUID_ValidationFail exists so invalid device paths are stopped
+// at the protocol boundary; it proves that by sending a bad path and checking
+// for ExitProtocol.
 func TestServer_ReadUUID_ValidationFail(t *testing.T) {
 	req := Request{Op: OpReadUUID, Dev: "/dev/disk/by-id/id"}
 	b, _ := json.Marshal(req)
@@ -64,6 +76,8 @@ func TestServer_ReadUUID_ValidationFail(t *testing.T) {
 	}
 }
 
+// TestServer_ReadUUID_DevNotFound exists so runtime lookup failures propagate;
+// it proves that by requesting a missing device and checking for ExitOpError.
 func TestServer_ReadUUID_DevNotFound(t *testing.T) {
 	req := Request{Op: OpReadUUID, Dev: "/dev/sdnonexistent"}
 	b, _ := json.Marshal(req)
@@ -76,6 +90,9 @@ func TestServer_ReadUUID_DevNotFound(t *testing.T) {
 	}
 }
 
+// TestServer_UnlockAndMount_ValidationFail exists so malformed unlock requests
+// never touch privileged code; it proves that by sending bad input and checking
+// for ExitProtocol.
 func TestServer_UnlockAndMount_ValidationFail(t *testing.T) {
 	req := Request{
 		Op:         OpUnlockAndMount,
@@ -94,6 +111,9 @@ func TestServer_UnlockAndMount_ValidationFail(t *testing.T) {
 	}
 }
 
+// TestServer_UnmountAndClose_NotMounted exists so repeated close requests stay
+// harmless; it proves that by faking an already-closed state and expecting
+// success.
 func TestServer_UnmountAndClose_NotMounted(t *testing.T) {
 	originalStatPath := statPath
 	originalReadMountTable := readMountTable
@@ -123,6 +143,9 @@ func TestServer_UnmountAndClose_NotMounted(t *testing.T) {
 	}
 }
 
+// TestServer_UnlockAndMount_AlreadyMounted exists so the worker does not redo
+// work for an already-mounted filesystem; it proves that by faking the mount
+// table and checking that neither unlock nor mount is called.
 func TestServer_UnlockAndMount_AlreadyMounted(t *testing.T) {
 	originalUnlockMapper := unlockMapper
 	originalMountFilesystem := mountFilesystem
@@ -164,6 +187,9 @@ func TestServer_UnlockAndMount_AlreadyMounted(t *testing.T) {
 	}
 }
 
+// TestServer_UnlockAndMount_AlreadyOpen exists so an already-open mapper is
+// only mounted, not re-unlocked; it proves that by faking the mapper path and
+// checking that only the mount call happens.
 func TestServer_UnlockAndMount_AlreadyOpen(t *testing.T) {
 	originalUnlockMapper := unlockMapper
 	originalMountFilesystem := mountFilesystem
@@ -231,6 +257,9 @@ func TestServer_UnlockAndMount_AlreadyOpen(t *testing.T) {
 	}
 }
 
+// TestServer_UnmountAndClose_ForeignMount exists so the worker does not tear
+// down unrelated filesystems; it proves that by faking a foreign mount source
+// and checking that unmount and close are both skipped.
 func TestServer_UnmountAndClose_ForeignMount(t *testing.T) {
 	originalLockMapper := lockMapper
 	originalUnmountFilesystem := unmountFilesystem
@@ -272,16 +301,70 @@ func TestServer_UnmountAndClose_ForeignMount(t *testing.T) {
 	}
 }
 
+// TestServer_UnmountAndClose_BusyMountPoint exists so the new pre-unmount busy
+// guard cannot regress; it proves that by faking one mount user and checking
+// that the worker returns mount_point_busy without unmounting or closing.
+func TestServer_UnmountAndClose_BusyMountPoint(t *testing.T) {
+	originalLockMapper := lockMapper
+	originalUnmountFilesystem := unmountFilesystem
+	originalReadMountTable := readMountTable
+	originalFindMountUsers := findMountUsers
+	t.Cleanup(func() {
+		lockMapper = originalLockMapper
+		unmountFilesystem = originalUnmountFilesystem
+		readMountTable = originalReadMountTable
+		findMountUsers = originalFindMountUsers
+	})
+
+	closeCalls := 0
+	unmountCalls := 0
+	lockMapper = func(mapper string) error {
+		closeCalls++
+		return nil
+	}
+	unmountFilesystem = func(target string, flags int) error {
+		unmountCalls++
+		return nil
+	}
+	readMountTable = func(path string) ([]byte, error) {
+		return []byte("/dev/mapper/mapper /mnt/test ext4 rw 0 0\n"), nil
+	}
+	findMountUsers = func(mountPoint string) ([]MountUser, error) {
+		return []MountUser{{PID: 123, Name: "terminal", Cmdline: "bash"}}, nil
+	}
+
+	req := Request{Op: OpUnmountAndClose, Mapper: "mapper", MountPoint: "/mnt/test"}
+	b, _ := json.Marshal(req)
+	resp, code := runServer(string(b) + "\n")
+	if code != ExitOpError {
+		t.Fatalf("expected ExitOpError, got %d", code)
+	}
+	if resp.OK || resp.Code != CodeMountPointBusy {
+		t.Fatalf("unexpected response: %+v", resp)
+	}
+	if len(resp.MountUsers) != 1 || resp.MountUsers[0].PID != 123 {
+		t.Fatalf("unexpected mount users: %+v", resp.MountUsers)
+	}
+	if unmountCalls != 0 || closeCalls != 0 {
+		t.Fatalf("expected no unmount or close calls, got unmount=%d close=%d", unmountCalls, closeCalls)
+	}
+}
+
+// TestServer_UnmountAndClose_DoesNotCloseAfterUnmountFailure exists so a failed
+// unmount does not cascade into mapper close; it proves that by forcing the
+// unmount call to fail and checking that close is never attempted.
 func TestServer_UnmountAndClose_DoesNotCloseAfterUnmountFailure(t *testing.T) {
 	originalLockMapper := lockMapper
 	originalUnmountFilesystem := unmountFilesystem
 	originalReadMountTable := readMountTable
 	originalStatPath := statPath
+	originalFindMountUsers := findMountUsers
 	t.Cleanup(func() {
 		lockMapper = originalLockMapper
 		unmountFilesystem = originalUnmountFilesystem
 		readMountTable = originalReadMountTable
 		statPath = originalStatPath
+		findMountUsers = originalFindMountUsers
 	})
 
 	mapperFile, err := os.CreateTemp(t.TempDir(), "mapper")
@@ -305,6 +388,9 @@ func TestServer_UnmountAndClose_DoesNotCloseAfterUnmountFailure(t *testing.T) {
 	readMountTable = func(path string) ([]byte, error) {
 		return []byte("/dev/mapper/mapper /mnt/test ext4 rw 0 0\n"), nil
 	}
+	findMountUsers = func(mountPoint string) ([]MountUser, error) {
+		return nil, nil
+	}
 	statPath = func(path string) (os.FileInfo, error) {
 		if path == "/dev/mapper/mapper" {
 			return mapperInfo, nil
@@ -326,6 +412,8 @@ func TestServer_UnmountAndClose_DoesNotCloseAfterUnmountFailure(t *testing.T) {
 	}
 }
 
+// TestWaitForPath_Appears exists so the mapper wait loop can be trusted on the
+// happy path; it proves that by creating the path shortly after waiting starts.
 func TestWaitForPath_Appears(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "mapper")
@@ -338,6 +426,8 @@ func TestWaitForPath_Appears(t *testing.T) {
 	}
 }
 
+// TestWaitForPath_Timeout exists so missing mappers fail clearly; it proves
+// that by never creating the path and checking for a timeout error.
 func TestWaitForPath_Timeout(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "missing")
@@ -346,6 +436,8 @@ func TestWaitForPath_Timeout(t *testing.T) {
 	}
 }
 
+// TestCloseMapperWithRetry exists so transient busy mapper errors are retried;
+// it proves that by failing twice with "busy" and succeeding on the third try.
 func TestCloseMapperWithRetry(t *testing.T) {
 	originalLockMapper := lockMapper
 	originalDelay := closeMapperRetryDelay
@@ -372,6 +464,8 @@ func TestCloseMapperWithRetry(t *testing.T) {
 	}
 }
 
+// TestEnsureDirectory exists so mount targets stay directories; it proves that
+// by checking one real directory and one real file path.
 func TestEnsureDirectory(t *testing.T) {
 	dir := t.TempDir()
 	if err := ensureDirectory(dir); err != nil {

@@ -1,6 +1,7 @@
 package worker
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,6 +10,9 @@ import (
 	"testing"
 )
 
+// TestClientUsesNonInteractiveSudoWithoutTerminal exists so daemon-style calls
+// never block on sudo prompts; it proves that by faking a non-terminal stdin
+// and checking that sudo gets the -n flag.
 func TestClientUsesNonInteractiveSudoWithoutTerminal(t *testing.T) {
 	originalStdinIsTerminal := stdinIsTerminal
 	stdinIsTerminal = func() bool { return false }
@@ -32,6 +36,9 @@ func TestClientUsesNonInteractiveSudoWithoutTerminal(t *testing.T) {
 	}
 }
 
+// TestClientAllowsInteractiveSudoWithTerminal exists so the CLI can still ask
+// sudo for credentials; it proves that by faking a terminal stdin and checking
+// that sudo is called without -n.
 func TestClientAllowsInteractiveSudoWithTerminal(t *testing.T) {
 	originalStdinIsTerminal := stdinIsTerminal
 	stdinIsTerminal = func() bool { return true }
@@ -51,6 +58,9 @@ func TestClientAllowsInteractiveSudoWithTerminal(t *testing.T) {
 	}
 }
 
+// TestClientReturnsCapturedSudoError exists so callers see the real sudo
+// failure; it proves that by scripting stderr output and checking it is kept in
+// the returned error.
 func TestClientReturnsCapturedSudoError(t *testing.T) {
 	originalStdinIsTerminal := stdinIsTerminal
 	stdinIsTerminal = func() bool { return false }
@@ -69,6 +79,36 @@ exit 1`)
 	}
 }
 
+// TestClientReturnsMountPointBusyError exists so busy worker responses stay
+// structured on the client side; it proves that by returning busy JSON and
+// checking that UnmountAndClose yields MountPointBusyError.
+func TestClientReturnsMountPointBusyError(t *testing.T) {
+	originalStdinIsTerminal := stdinIsTerminal
+	stdinIsTerminal = func() bool { return false }
+	t.Cleanup(func() { stdinIsTerminal = originalStdinIsTerminal })
+
+	sudoPath, _ := fakeSudo(t, `cat <<'JSON'
+{"ok":false,"code":"mount_point_busy","message":"mount point /mnt/usb is used by 1 process","mount_users":[{"pid":123,"name":"nautilus","cmdline":"nautilus /mnt/usb"}]}
+JSON
+exit 1`)
+	client := &Client{selfPath: "/usr/local/bin/luks-automount", sudoPath: sudoPath}
+
+	err := client.UnmountAndClose(&Request{Mapper: "usb", MountPoint: "/mnt/usb"})
+	var busy *MountPointBusyError
+	if !errors.As(err, &busy) {
+		t.Fatalf("got %T %v, want MountPointBusyError", err, err)
+	}
+	if busy.MountPoint != "/mnt/usb" || len(busy.Users) != 1 || busy.Users[0].PID != 123 {
+		t.Fatalf("unexpected busy error: %+v", busy)
+	}
+	if !strings.Contains(err.Error(), "PID 123 nautilus") {
+		t.Fatalf("busy error does not include process details: %v", err)
+	}
+}
+
+// TestRunInteractiveSudoSkipsWithoutTerminal exists so daemon startup does not
+// probe sudo in non-interactive runs; it proves that by removing sudo from PATH
+// and checking the helper still succeeds.
 func TestRunInteractiveSudoSkipsWithoutTerminal(t *testing.T) {
 	originalStdinIsTerminal := stdinIsTerminal
 	stdinIsTerminal = func() bool { return false }
@@ -80,6 +120,8 @@ func TestRunInteractiveSudoSkipsWithoutTerminal(t *testing.T) {
 	}
 }
 
+// fakeSudo exists to keep client tests local; it writes a sudo stub that logs
+// argv and returns a scripted response.
 func fakeSudo(t *testing.T, body string) (string, string) {
 	t.Helper()
 	dir := t.TempDir()
@@ -92,6 +134,7 @@ func fakeSudo(t *testing.T, body string) (string, string) {
 	return sudoPath, argsPath
 }
 
+// readArgs exists to let tests assert exactly how fakeSudo was invoked.
 func readArgs(t *testing.T, path string) []string {
 	t.Helper()
 	b, err := os.ReadFile(path)

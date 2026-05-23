@@ -70,6 +70,9 @@ func (c *Client) UnmountAndClose(req *Request) error {
 		return err
 	}
 	if !resp.OK {
+		if resp.Code == CodeMountPointBusy {
+			return &MountPointBusyError{MountPoint: req.MountPoint, Message: resp.Message, Users: resp.MountUsers}
+		}
 		return errors.New(resp.Message)
 	}
 	return nil

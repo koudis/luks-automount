@@ -30,6 +30,7 @@ PartOf=graphical-session.target
 
 [Service]
 Type=simple
+Environment=XDG_RUNTIME_DIR=%%t
 ExecStart=%s run
 Restart=on-failure
 RestartSec=5s

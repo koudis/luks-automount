@@ -50,10 +50,21 @@ supported. Passphrases are stored in GNOME Keyring.
 
 ### 2.3 Unmounting and Locking
 
-- **FR-12** When a registered disk is removed, the daemon MUST perform a
-  **lazy unmount** (`MNT_DETACH`) followed by closing the dm-crypt mapping.
-  If the disk was still tracked as mounted at removal time, the daemon MUST
-  log a `WARN`-level message indicating the device was removed while mounted.
+- **FR-12** Before any code path performs any `umount` / unmount operation,
+  including **lazy unmount** (`MNT_DETACH`), the worker MUST check whether any
+  process is still using the mount point. This applies to manual `lock`, daemon
+  auto-lock on removal, and any cleanup unmount before re-mounting. The check
+  MUST be performed immediately before the unmount attempt; earlier state checks
+  MUST NOT be treated as sufficient. If one or more processes are using the
+  mount point, the operation MUST stop before unmounting and before closing the
+  dm-crypt mapping. The worker MUST return a structured busy response containing
+  the blocking processes. The user-side process MUST show a GNOME graphical
+  warning listing those processes and asking the user to close them and retry.
+  If no blocking processes are found and a registered disk was removed, the
+  daemon MUST perform a **lazy unmount** (`MNT_DETACH`) followed by closing the
+  dm-crypt mapping. If the disk was still tracked as mounted at removal time,
+  the daemon MUST log a `WARN`-level message indicating the device was removed
+  while mounted.
 - **FR-13** On daemon shutdown (SIGINT / SIGTERM) the daemon MUST stop
   accepting new events, wait up to 10 seconds for in-flight operations to
   complete, then exit. It MUST NOT auto-unmount mounted disks.
@@ -75,8 +86,8 @@ supported. Passphrases are stored in GNOME Keyring.
 | `remove <name>` | user | Delete the config entry and the Keyring entry for `<name>`. Refuses if the disk is currently mounted; user must run `lock <name>` first. |
 | `list` | user | Show all registered disks. Columns: `NAME`, `UUID`, `DEV`, `UNLOCKED`, `MOUNTED`. |
 | `unlock <name>` | user | One-shot: unlock and mount a specific already-plugged disk. Falls back to interactive passphrase prompt if Keyring entry is missing. |
-| `lock <name>` | user | One-shot: unmount and close a specific disk. |
-| `run` | user | Long-running daemon: detect and auto-unlock on plug-in, auto-lock on removal. Only one instance may run at a time (lock file). |
+| `lock <name>` | user | One-shot: unmount and close a specific disk. If the mount point is busy, show a GNOME warning listing the blocking processes. |
+| `run` | user | Long-running daemon: detect and auto-unlock on plug-in, auto-lock on removal. It is intended to run as a systemd user service. If the mount point is busy during auto-lock, show a GNOME warning from the user service. Only one instance may run at a time (lock file). |
 | `install` | user + sudo | Install the binary to `/usr/local/bin`, write the sudoers drop-in, and write and enable the systemd user unit. |
 | `uninstall` | user + sudo | Disable and remove the systemd user unit, remove the sudoers drop-in, and remove the installed binary. |
 | `worker` | root (sudo) | **Internal, hidden from help.** Performs a single privileged operation driven by a JSON message on stdin. |
@@ -139,10 +150,12 @@ supported. Passphrases are stored in GNOME Keyring.
   at `~/.local/state/luks-automount/run.lock` MUST be acquired with `flock`
   on startup; if already held the process MUST exit with an error.
 - **NFR-08** The `run` subcommand is intended to be launched by the
-  systemd user instance, which guarantees that `DBUS_SESSION_BUS_ADDRESS`
-  and `XDG_RUNTIME_DIR` are set. The generated unit file MUST include
-  `After=graphical-session.target` so the daemon starts only after the
-  GNOME session is fully initialised.
+  systemd user instance. The generated unit file MUST include
+  `After=graphical-session.target` and `PartOf=graphical-session.target` so
+  the daemon runs in the user's graphical session. User-facing dialogs MUST be
+  launched only by user-side processes, including the `lock` command and the
+  `run` user service. The privileged `worker` process MUST NOT access D-Bus,
+  the display server, or GUI tools.
 - **NFR-09** The supported filesystem types are: `ext4`, `btrfs`, `xfs`,
   `vfat`, `exfat`, `ntfs`. Any other value MUST be rejected.
 - **NFR-10** Mount options MUST always include `nosuid,nodev` prepended
@@ -150,6 +163,11 @@ supported. Passphrases are stored in GNOME Keyring.
   or remove these forced options.
 - **NFR-11** `cryptsetup` MUST be available to the privileged worker for
   LUKS identification, unlocking, and closing.
+- **NFR-12** A GNOME-compatible graphical dialog utility, such as `zenity`,
+  SHOULD be used for mount-point-busy warnings when a graphical session is
+  available. If no graphical session or dialog utility is available, the
+  operation MUST still fail safely and the same blocking-process details MUST
+  be returned to the caller or written to the daemon log.
 
 ---
 
@@ -181,6 +199,8 @@ mount_options   = "noatime"          # optional, comma-separated
   entry.
 - The Keyring is accessed by the **user process only**. The `worker` process
   MUST NOT access D-Bus or the Keyring.
+- GNOME warning dialogs are also shown by the **user process only**. The
+  `worker` process MUST report structured data and MUST NOT open windows.
 
 ---
 
@@ -211,14 +231,27 @@ Communication between the user process and the `worker` subprocess is via
 ```json
 { "ok": true,  "message": "" }
 { "ok": false, "message": "<reason>" }
+{ "ok": false, "code": "mount_point_busy", "message": "<reason>",
+  "mount_users": [
+    { "pid": 1234, "name": "nautilus", "cmdline": "nautilus /mnt/backup" }
+  ] }
 ```
 
-For `read_uuid` the `message` field carries the UUID string on success.
+For `read_uuid` the `message` field carries the UUID string on success. The
+`code` field is optional and carries a machine-readable error code when the
+caller must handle an error specially. `mount_users` is present only for
+`code = "mount_point_busy"`.
 
 - One worker process is spawned per operation and exits immediately after
   writing the response.
 - Exit codes: `0` on `{ok:true}`, `1` on `{ok:false}` (operation error),
   `2` on protocol / JSON parse error.
+- For `unmount_and_close`, the worker MUST inspect `/proc` immediately before
+  every unmount attempt when the requested mount point is mounted from the
+  expected mapper. A process counts as a mount user when its `cwd`, `root`,
+  `exe`, an open file descriptor, or a memory-mapped file resolves to the mount
+  point or below it. The worker MUST include at least PID and process name for
+  each discovered process, and SHOULD include the command line when available.
 - The worker MUST validate all inputs before acting:
   - `op` is one of `unlock_and_mount`, `unmount_and_close`, `read_uuid`.
   - `mount_point` satisfies `strings.HasPrefix(cleaned, "/mnt/")` and
@@ -258,13 +291,17 @@ luks-automount/
 │   │   └── keyring.go           # Get / Set / Delete passphrase by disk name
 │   ├── logging/
 │   │   └── logging.go           # slog setup: stderr + rotating file
+│   ├── dialog/
+│   │   └── dialog.go            # user-side GNOME warnings
 │   ├── luks/
 │   │   └── identify.go          # ReadUUID(devPath) → string
 │   ├── monitor/
 │   │   └── monitor.go           # Netlink listener → chan Event
 │   ├── worker/
-│   │   ├── protocol.go          # Request / Response JSON types
+│   │   ├── request.go           # Request JSON type
+│   │   ├── response.go          # Response JSON type
 │   │   ├── client.go            # user-side: spawn sudo worker, pipe passphrase
+│   │   ├── mount_users.go       # root-side: inspect mount-point users via /proc
 │   │   └── server.go            # root-side: read stdin, run op, write response
 │   └── engine/
 │       └── engine.go            # orchestrates monitor + config + keyring + worker
@@ -282,11 +319,13 @@ luks-automount/
 | Wrong passphrase | Log `ERROR`; do NOT auto-delete the Keyring entry |
 | Mount point does not exist | Log `ERROR` and abort; `add` prints `sudo mkdir` hint |
 | Mount point outside `/mnt` | Rejected at `add` time and by the worker at runtime |
+| Mount point busy during `lock` | Abort before unmount/close; show GNOME warning listing blocking processes |
+| Mount point busy during daemon auto-lock | Abort before unmount/close; the `run` user service shows GNOME warning listing blocking processes and logs the failure |
 | `remove` while disk is mounted | Exit with error; user must run `lock <name>` first |
 | Disk already unlocked / mounted | Skip the already-done step; remaining steps proceed |
 | Disk already closed / unmounted | Skip the already-done step; remaining steps proceed |
 | `chown` fails on read-only mount | Log `WARN`; mount operation still reports success |
-| Device removed while mounted | Log `WARN`; proceed with lazy unmount + LUKS close |
+| Device removed while mounted | Log `WARN`; perform the mandatory pre-unmount busy check; if not busy, proceed with lazy unmount + LUKS close; if busy, follow mount-point-busy behaviour |
 | Duplicate entry on `add` | Exit with error listing which field is duplicated |
 | Second `run` instance started | Exit with error: "daemon is already running" |
 | `install` step declined | Skip the declined step and continue with the next step |
