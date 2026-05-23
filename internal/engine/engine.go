@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"luks-automount/internal/config"
+	"luks-automount/internal/dialog"
 	"luks-automount/internal/keyring"
 	"luks-automount/internal/monitor"
 	"luks-automount/internal/worker"
@@ -23,6 +24,7 @@ var (
 	readUUID           = (*worker.Client).ReadUUID
 	unlockAndMount     = (*worker.Client).UnlockAndMount
 	unmountAndClose    = (*worker.Client).UnmountAndClose
+	showMountPointBusy = dialog.ShowMountPointBusy
 	readUUIDRetryDelay = 500 * time.Millisecond
 )
 
@@ -145,6 +147,7 @@ func (e *Engine) handleAdd(ev monitor.Event) {
 			MountPoint: disk.MountPoint,
 		}
 		if err := unmountAndClose(e.client, req); err != nil {
+			reportMountPointBusy(disk.MountPoint, err)
 			slog.Error("unmount+close failed", "name", disk.Name, "err", err)
 			return
 		}
@@ -224,6 +227,7 @@ func (e *Engine) handleRemove(ev monitor.Event) {
 		MountPoint: disk.MountPoint,
 	}
 	if err := unmountAndClose(e.client, req); err != nil {
+		reportMountPointBusy(disk.MountPoint, err)
 		slog.Error("unmount+close failed", "name", disk.Name, "err", err)
 		state.Mounted = false
 		state.DevPath = ""
@@ -265,6 +269,16 @@ func (e *Engine) forgetDev(devPath string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	delete(e.devUUID, devPath)
+}
+
+func reportMountPointBusy(mountPoint string, err error) {
+	var busy *worker.MountPointBusyError
+	if !errors.As(err, &busy) {
+		return
+	}
+	if dialogErr := showMountPointBusy(mountPoint, busy.Users); dialogErr != nil {
+		slog.Warn("mount-point-busy dialog failed", "mount_point", mountPoint, "err", dialogErr)
+	}
 }
 
 func zero(b []byte) {

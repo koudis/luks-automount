@@ -30,6 +30,7 @@ var (
 	readMountTable        = os.ReadFile
 	mountFilesystem       = unix.Mount
 	unmountFilesystem     = unix.Unmount
+	findMountUsers        = FindMountUsers
 )
 
 type Server struct {
@@ -162,6 +163,15 @@ func (s *Server) handleUnmountAndClose(req *Request) int {
 		return ExitOpError
 	}
 	if mountedFrom == mapperPath {
+		users, err := findMountUsers(req.MountPoint)
+		if err != nil {
+			s.writeResponse(false, "mount users: "+err.Error())
+			return ExitOpError
+		}
+		if len(users) > 0 {
+			s.writeBusyResponse(req.MountPoint, users)
+			return ExitOpError
+		}
 		if err := unmountFilesystem(req.MountPoint, unix.MNT_DETACH); err != nil && err != unix.EINVAL {
 			s.writeResponse(false, "unmount: "+err.Error())
 			return ExitOpError
@@ -269,6 +279,12 @@ func ensureDirectory(path string) error {
 
 func (s *Server) writeResponse(ok bool, msg string) {
 	resp := Response{OK: ok, Message: msg}
+	enc := json.NewEncoder(s.out)
+	_ = enc.Encode(resp)
+}
+
+func (s *Server) writeBusyResponse(mountPoint string, users []MountUser) {
+	resp := Response{OK: false, Code: CodeMountPointBusy, Message: busyMessage(mountPoint, len(users)), MountUsers: users}
 	enc := json.NewEncoder(s.out)
 	_ = enc.Encode(resp)
 }
