@@ -232,9 +232,9 @@ Communication between the user process and the `worker` subprocess is via
 { "ok": true,  "message": "" }
 { "ok": false, "message": "<reason>" }
 { "ok": false, "code": "mount_point_busy", "message": "<reason>",
-  "mount_users": [
-    { "pid": 1234, "name": "nautilus", "cmdline": "nautilus /mnt/backup" }
-  ] }
+	  "mount_users": [
+	    { "pid": 1234, "name": "nautilus", "cmdline": "nautilus" }
+	  ] }
 ```
 
 For `read_uuid` the `message` field carries the UUID string on success. The

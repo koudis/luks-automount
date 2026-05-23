@@ -72,8 +72,11 @@ func mapsUseMountPoint(mapsPath, mountPoint string) bool {
 	}
 	for _, line := range strings.Split(string(data), "\n") {
 		fields := strings.Fields(line)
-		if len(fields) >= 6 && pathUsesMountPoint(fields[5], mountPoint) {
-			return true
+		if len(fields) >= 6 {
+			mappedPath := strings.Join(fields[5:], " ")
+			if pathUsesMountPoint(mappedPath, mountPoint) {
+				return true
+			}
 		}
 	}
 	return false
@@ -101,8 +104,19 @@ func processCmdline(procDir string) string {
 	if err != nil {
 		return ""
 	}
-	parts := strings.Split(strings.TrimRight(string(data), "\x00"), "\x00")
-	return strings.TrimSpace(strings.Join(parts, " "))
+	raw := strings.TrimRight(string(data), "\x00")
+	if raw == "" {
+		return ""
+	}
+	parts := strings.Split(raw, "\x00")
+	if len(parts) == 0 {
+		return ""
+	}
+	executable := strings.TrimSpace(parts[0])
+	if executable == "" {
+		return ""
+	}
+	return strings.TrimSpace(filepath.Base(executable))
 }
 
 func busyMessage(mountPoint string, count int) string {

@@ -88,7 +88,7 @@ func TestClientReturnsMountPointBusyError(t *testing.T) {
 	t.Cleanup(func() { stdinIsTerminal = originalStdinIsTerminal })
 
 	sudoPath, _ := fakeSudo(t, `cat <<'JSON'
-{"ok":false,"code":"mount_point_busy","message":"mount point /mnt/usb is used by 1 process","mount_users":[{"pid":123,"name":"nautilus","cmdline":"nautilus /mnt/usb"}]}
+	{"ok":false,"code":"mount_point_busy","message":"mount point /mnt/usb is used by 1 process","mount_users":[{"pid":123,"name":"nautilus","cmdline":"nautilus"}]}
 JSON
 exit 1`)
 	client := &Client{selfPath: "/usr/local/bin/luks-automount", sudoPath: sudoPath}

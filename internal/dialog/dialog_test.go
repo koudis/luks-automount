@@ -15,8 +15,8 @@ import (
 // proves that by checking that the text includes the mount point, process info,
 // and the retry instruction.
 func TestMountPointBusyText(t *testing.T) {
-	text := MountPointBusyText("/mnt/usb", []worker.MountUser{{PID: 123, Name: "nautilus", Cmdline: "nautilus /mnt/usb"}})
-	for _, want := range []string{"/mnt/usb", "PID 123 nautilus", "nautilus /mnt/usb", "Close these applications"} {
+	text := MountPointBusyText("/mnt/usb", []worker.MountUser{{PID: 123, Name: "nautilus", Cmdline: "nautilus"}})
+	for _, want := range []string{"/mnt/usb", "PID 123 nautilus", "Close these applications"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("text %q does not contain %q", text, want)
 		}
